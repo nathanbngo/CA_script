@@ -4,8 +4,9 @@ Simple interface for viewing CA tracking summary and running updates.
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, filedialog
 import os
+import glob
 import subprocess
 import sys
 from datetime import datetime
@@ -13,25 +14,26 @@ import pandas as pd
 from pathlib import Path
 
 # Configuration (same as main script)
-OUTPUT_FILE = r"F:\Trade Support\Corporate Actions\CA check\CA Raw file\CA_Tracking.xlsx"
+INPUT_FOLDER = r"F:\Trade Support\Corporate Actions\CA check\CA Raw file"
+OUTPUT_FILE = r"F:\Trade Support\Corporate Actions\CA check\CA_Tracking.xlsx"
 SCRIPT_FILE = "CA_Tracking_System.py"
 
 class CATrackingGUI:
     def __init__(self, root):
         self.root = root
         self.root.title("Corporate Action Tracking System")
-        self.root.geometry("600x500")
-        self.root.resizable(False, False)
+        self.root.geometry("800x600")
+        self.root.resizable(True, True)
+        self.input_file = None
         
         # Configure style
         style = ttk.Style()
         style.theme_use('clam')
         
         self.setup_ui()
-        self.refresh_stats()
-        
-        # Auto-refresh every 30 seconds
-        self.auto_refresh()
+        # Only detect input file on startup; stats are refreshed on demand
+        self.detect_latest_input_file()
+        self.status_label.config(text="Ready. Click 'Refresh Stats' to load data.")
     
     def setup_ui(self):
         """Set up the user interface"""
@@ -53,6 +55,34 @@ class CATrackingGUI:
         main_frame = tk.Frame(self.root, padx=20, pady=20)
         main_frame.pack(fill=tk.BOTH, expand=True)
         
+        # Input file section
+        input_frame = tk.Frame(main_frame)
+        input_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        input_label = tk.Label(
+            input_frame,
+            text="Input File (Most Recent):",
+            font=("Arial", 10, "bold"),
+        )
+        input_label.pack(side=tk.LEFT)
+        
+        self.input_file_value_label = tk.Label(
+            input_frame,
+            text="Detecting...",
+            font=("Arial", 10),
+            anchor=tk.W,
+        )
+        self.input_file_value_label.pack(side=tk.LEFT, padx=(5, 10), fill=tk.X, expand=True)
+        
+        self.change_file_button = tk.Button(
+            input_frame,
+            text="Change...",
+            font=("Arial", 10),
+            command=self.change_input_file,
+            cursor="hand2"
+        )
+        self.change_file_button.pack(side=tk.RIGHT)
+        
         # Stats section
         stats_frame = tk.LabelFrame(main_frame, text="Current Status", font=("Arial", 12, "bold"), padx=15, pady=15)
         stats_frame.pack(fill=tk.X, pady=(0, 15))
@@ -69,26 +99,9 @@ class CATrackingGUI:
         self.last_update_label = tk.Label(stats_frame, text="Last Update: Never", font=("Arial", 10), fg="gray")
         self.last_update_label.pack(anchor=tk.W, pady=5)
         
-        # Urgent items section
-        urgent_frame = tk.LabelFrame(main_frame, text="Urgent Items (< 3 days)", font=("Arial", 12, "bold"), padx=15, pady=15)
-        urgent_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
-        
-        # Scrollable list for urgent items
-        scrollbar = tk.Scrollbar(urgent_frame)
-        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
-        
-        self.urgent_listbox = tk.Listbox(
-            urgent_frame,
-            font=("Arial", 10),
-            yscrollcommand=scrollbar.set,
-            height=8
-        )
-        self.urgent_listbox.pack(fill=tk.BOTH, expand=True)
-        scrollbar.config(command=self.urgent_listbox.yview)
-        
-        # Buttons frame
+        # Buttons frame (placed above urgent items so it's always visible)
         buttons_frame = tk.Frame(main_frame)
-        buttons_frame.pack(fill=tk.X)
+        buttons_frame.pack(fill=tk.X, pady=(0, 10))
         
         # Update button
         self.update_button = tk.Button(
@@ -132,6 +145,23 @@ class CATrackingGUI:
         )
         self.refresh_button.pack(side=tk.LEFT)
         
+        # Urgent items section
+        urgent_frame = tk.LabelFrame(main_frame, text="Urgent Items (< 3 days)", font=("Arial", 12, "bold"), padx=15, pady=15)
+        urgent_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
+        
+        # Scrollable list for urgent items
+        scrollbar = tk.Scrollbar(urgent_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        
+        self.urgent_listbox = tk.Listbox(
+            urgent_frame,
+            font=("Courier New", 10),
+            yscrollcommand=scrollbar.set,
+            height=15
+        )
+        self.urgent_listbox.pack(fill=tk.BOTH, expand=True)
+        scrollbar.config(command=self.urgent_listbox.yview)
+        
         # Status bar
         self.status_label = tk.Label(
             self.root,
@@ -144,6 +174,48 @@ class CATrackingGUI:
             bg="#f0f0f0"
         )
         self.status_label.pack(side=tk.BOTTOM, fill=tk.X)
+
+    def detect_latest_input_file(self):
+        """Detect the most recent CA input file and update the label"""
+        try:
+            if not os.path.exists(INPUT_FOLDER):
+                self.input_file = None
+                self.input_file_value_label.config(text="Folder not found")
+                return
+
+            files = []
+            for pattern in ("*.csv", "*.xls", "*.xlsx"):
+                files.extend(glob.glob(os.path.join(INPUT_FOLDER, pattern)))
+
+            if not files:
+                self.input_file = None
+                self.input_file_value_label.config(text="No files found")
+                return
+
+            latest = max(files, key=os.path.getmtime)
+            self.input_file = latest
+            self.input_file_value_label.config(text=os.path.basename(latest))
+        except Exception as e:
+            self.input_file = None
+            self.input_file_value_label.config(text=f"Error: {str(e)}")
+
+    def change_input_file(self):
+        """Let user choose a different input file"""
+        initial_dir = INPUT_FOLDER if os.path.exists(INPUT_FOLDER) else os.getcwd()
+        file_path = filedialog.askopenfilename(
+            title="Select CA input file (CSV or Excel)",
+            initialdir=initial_dir,
+            filetypes=(
+                ("CA files", "*.csv;*.xls;*.xlsx"),
+                ("CSV files", "*.csv"),
+                ("Excel files", "*.xls;*.xlsx"),
+                ("All files", "*.*"),
+            ),
+        )
+        if file_path:
+            self.input_file = file_path
+            self.input_file_value_label.config(text=os.path.basename(file_path))
+            self.status_label.config(text="Input file updated")
     
     def refresh_stats(self):
         """Refresh statistics from Excel file"""
@@ -227,11 +299,12 @@ class CATrackingGUI:
                         deadline = deadline_str.date() if hasattr(deadline_str, 'date') else deadline_str
                     
                     if deadline <= urgent_date:
-                        security_name = str(row.get('Security Name', 'Unknown'))[:40]
-                        event_type = str(row.get('Event Type', 'Unknown'))[:30]
+                        security_name = str(row.get('Security Name', 'Unknown'))[:30]
+                        event_type = str(row.get('Event Type', 'Unknown'))[:20]
                         days_left = (deadline - today).days
-                        
-                        item_text = f"{security_name} | {event_type} | {days_left} day(s) left"
+
+                        # Nicely aligned in monospaced font
+                        item_text = f"{security_name:<30}  {event_type:<20}  {days_left:>2} day(s)"
                         self.urgent_listbox.insert(tk.END, item_text)
                         urgent_count += 1
                         
@@ -248,6 +321,15 @@ class CATrackingGUI:
     
     def run_update(self):
         """Run the CA tracking update script"""
+        # Ensure we have an input file selected
+        if not self.input_file:
+            self.detect_latest_input_file()
+        
+        if not self.input_file:
+            messagebox.showerror("Error", "No input file selected or found. Please choose a file first.")
+            self.status_label.config(text="Update failed: no input file")
+            return
+
         self.update_button.config(state=tk.DISABLED, text="Updating...")
         self.status_label.config(text="Running update... Please wait...")
         self.root.update()
@@ -271,8 +353,11 @@ class CATrackingGUI:
             if spec and spec.loader:
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
-                # Run the main function (suppress the GUI message box, we'll show our own)
-                module.main()
+                # Run the core function with explicit input file
+                if hasattr(module, "run_ca_tracking"):
+                    module.run_ca_tracking(self.input_file)
+                else:
+                    module.main()
                 self.status_label.config(text="Update completed successfully!")
                 messagebox.showinfo("Success", "CA Tracking updated successfully!")
                 self.refresh_stats()
