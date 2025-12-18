@@ -243,7 +243,7 @@ def determine_deadline_date(row):
     return None, None
 
 
-def generate_tabs_from_archive(archive_df):
+def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
     """Generate Tab 1 and Tab 2 from archive by applying filters and date criteria"""
     print_progress("Generating tabs from archive...")
     
@@ -252,6 +252,17 @@ def generate_tabs_from_archive(archive_df):
     
     # First, apply filters to archive (same filters as before)
     filtered_df = apply_filters_to_archive(archive_df)
+    
+    # Create a dictionary of previous Tab 1 comments by Reference ID
+    previous_comments = {}
+    if previous_tab1_df is not None and not previous_tab1_df.empty:
+        if 'Reference ID' in previous_tab1_df.columns and 'Comments' in previous_tab1_df.columns:
+            for idx, row in previous_tab1_df.iterrows():
+                ref_id = str(row.get('Reference ID', ''))
+                comment = row.get('Comments', '')
+                if pd.notna(ref_id) and ref_id != '' and pd.notna(comment) and str(comment).strip() != '':
+                    previous_comments[ref_id] = str(comment).strip()
+            print_progress(f"Loaded {len(previous_comments)} comments from previous Next 15 Days tab")
     
     tab1_data = []
     tab2_data = []
@@ -277,6 +288,14 @@ def generate_tabs_from_archive(archive_df):
         
         # Tab 1: Next 15 days
         if TODAY <= deadline_date <= NEXT_15_DAYS:
+            # Preserve comment from previous Tab 1 if archive comment is empty
+            ref_id = str(row_data.get('Reference ID', ''))
+            archive_comment = row_data.get('Comments', '')
+            
+            # If archive has no comment but previous Tab 1 had a comment, use previous comment
+            if (pd.isna(archive_comment) or str(archive_comment).strip() == '') and ref_id in previous_comments:
+                row_data['Comments'] = previous_comments[ref_id]
+            
             tab1_data.append(row_data)
         # Tab 2: Last 7 days (auto-remove after 7 days)
         elif LAST_7_DAYS <= deadline_date < TODAY:
@@ -347,7 +366,7 @@ def prepare_output_columns(df):
 def load_existing_excel(file_path):
     """Load existing Excel file if it exists"""
     if not os.path.exists(file_path):
-        return pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
     print_progress("Loading existing Excel file...")
     
@@ -359,13 +378,20 @@ def load_existing_excel(file_path):
         archive_df = pd.DataFrame()
     
     try:
+        # Load Tab 1 (Next 15 Days) to preserve comments
+        tab1_df = pd.read_excel(file_path, sheet_name="Next 15 Days")
+        print_progress(f"Loaded {len(tab1_df)} CAs from Next 15 Days")
+    except:
+        tab1_df = pd.DataFrame()
+    
+    try:
         # Load Tab 2 to preserve manual removals
         tab2_df = pd.read_excel(file_path, sheet_name="Last 7 Days")
         print_progress(f"Loaded {len(tab2_df)} CAs from Tab 2")
     except:
         tab2_df = pd.DataFrame()
     
-    return archive_df, tab2_df
+    return archive_df, tab1_df, tab2_df
 
 
 def data_changed(new_row, existing_row, exclude_cols=['Comments', 'Deadline Date', 'Deadline Type']):
@@ -649,14 +675,15 @@ def main():
         # Step 4: Parse dates
         df = parse_dates(df)
         
-        # Step 5: Load existing Excel archive
-        existing_archive_df, _ = load_existing_excel(OUTPUT_FILE)
+        # Step 5: Load existing Excel archive and previous tabs
+        existing_archive_df, previous_tab1_df, _ = load_existing_excel(OUTPUT_FILE)
         
         # Step 6: Merge ALL CAs with archive (add new, update if changed, preserve comments)
         archive_df = merge_with_archive(df, existing_archive_df)
         
         # Step 7: Generate Tab 1 and Tab 2 FROM archive (apply filters + date criteria)
-        tab1_df, tab2_df = generate_tabs_from_archive(archive_df)
+        # Pass previous Tab 1 to preserve comments for Next 15 Days CAs
+        tab1_df, tab2_df = generate_tabs_from_archive(archive_df, previous_tab1_df)
         
         # Step 10: Backup existing file
         backup_existing_file(OUTPUT_FILE)
