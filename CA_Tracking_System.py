@@ -61,23 +61,20 @@ def show_message(title, message, is_error=False):
 
 
 def find_latest_file(folder_path):
-    """Find the latest Excel file in the folder"""
+    """Find the latest Excel file in the folder (only .xlsx files, not .xls)"""
     print_progress(f"Searching for Excel files in: {folder_path}")
     
     if not os.path.exists(folder_path):
         raise FileNotFoundError(f"Input folder not found: {folder_path}")
     
-    # Look for Excel files only
-    xls_files = glob.glob(os.path.join(folder_path, "*.xls"))
+    # Look for .xlsx files only (openpyxl doesn't support .xls)
     xlsx_files = glob.glob(os.path.join(folder_path, "*.xlsx"))
     
-    all_files = xls_files + xlsx_files
-    
-    if not all_files:
-        raise FileNotFoundError(f"No Excel files found in: {folder_path}")
+    if not xlsx_files:
+        raise FileNotFoundError(f"No .xlsx files found in: {folder_path}")
     
     # Get the most recently modified file
-    latest_file = max(all_files, key=os.path.getmtime)
+    latest_file = max(xlsx_files, key=os.path.getmtime)
     print_progress(f"Found latest file: {os.path.basename(latest_file)}")
     return latest_file
 
@@ -88,13 +85,11 @@ def load_data(file_path):
     
     file_ext = os.path.splitext(file_path)[1].lower()
     
-    if file_ext in ['.xls', '.xlsx']:
-        # Use openpyxl engine (already imported) - only works with .xlsx files
-        if file_ext == '.xls':
-            raise ValueError("Please convert .xls files to .xlsx format. openpyxl does not support .xls files.")
+    if file_ext == '.xlsx':
+        # Use openpyxl engine (already imported)
         df = pd.read_excel(file_path, engine='openpyxl')
     else:
-        raise ValueError(f"Unsupported file format: {file_ext}. Expected .xlsx")
+        raise ValueError(f"Unsupported file format: {file_ext}. Expected .xlsx (openpyxl does not support .xls files)")
     
     print_progress(f"Loaded {len(df)} rows")
     return df
