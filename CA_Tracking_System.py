@@ -255,15 +255,17 @@ def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
     filtered_df = apply_filters_to_archive(archive_df)
     
     # Create a dictionary of previous Tab 1 comments by Reference ID
+    # This will be used to transfer comments for CAs that are in the Next 15 Days
     previous_comments = {}
     if previous_tab1_df is not None and not previous_tab1_df.empty:
         if 'Reference ID' in previous_tab1_df.columns and 'Comments' in previous_tab1_df.columns:
             for idx, row in previous_tab1_df.iterrows():
                 ref_id = str(row.get('Reference ID', ''))
                 comment = row.get('Comments', '')
+                # Only store non-empty comments
                 if pd.notna(ref_id) and ref_id != '' and pd.notna(comment) and str(comment).strip() != '':
                     previous_comments[ref_id] = str(comment).strip()
-            print_progress(f"Loaded {len(previous_comments)} comments from previous Next 15 Days tab")
+            print_progress(f"Loaded {len(previous_comments)} comments from previous Next 15 Days tab for transfer")
     else:
         print_progress("No previous Next 15 Days tab found - starting fresh")
     
@@ -294,20 +296,20 @@ def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
             ref_id = str(row_data.get('Reference ID', ''))
             archive_comment = row_data.get('Comments', '')
             
-            # Check if archive has a valid comment (from new data - this overrides)
+            # Priority: Today's comment (from archive/new data) overrides previous comment
+            # If no today's comment, check if previous Next 15 Days tab had a comment
             has_archive_comment = (pd.notna(archive_comment) and 
                                   str(archive_comment).strip() != '')
             
             if has_archive_comment:
-                # Use archive comment (from new data) - this overrides previous comments
+                # Use today's comment (from new data) - this overrides previous comments
                 row_data['Comments'] = str(archive_comment).strip()
             elif ref_id in previous_comments:
-                # No archive comment, but previous Tab 1 had a comment - carry it over
+                # No today's comment, but previous Next 15 Days tab had a comment - transfer it
                 row_data['Comments'] = previous_comments[ref_id]
             else:
                 # No comment from either source - ensure it's empty string
-                if 'Comments' not in row_data or pd.isna(row_data.get('Comments', '')):
-                    row_data['Comments'] = ""
+                row_data['Comments'] = ""
             
             tab1_data.append(row_data)
         # Tab 2: Last 7 days (auto-remove after 7 days)
@@ -316,6 +318,23 @@ def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
     
     tab1_df = pd.DataFrame(tab1_data) if tab1_data else pd.DataFrame()
     tab2_df = pd.DataFrame(tab2_data) if tab2_data else pd.DataFrame()
+    
+    # Count how many comments were transferred
+    if not tab1_df.empty:
+        comments_transferred = 0
+        comments_from_today = 0
+        for idx, row in tab1_df.iterrows():
+            ref_id = str(row.get('Reference ID', ''))
+            comment = str(row.get('Comments', ''))
+            if comment.strip() != '':
+                if ref_id in previous_comments and comment == previous_comments[ref_id]:
+                    comments_transferred += 1
+                else:
+                    comments_from_today += 1
+        if comments_transferred > 0:
+            print_progress(f"Transferred {comments_transferred} comments from previous Next 15 Days tab")
+        if comments_from_today > 0:
+            print_progress(f"Using {comments_from_today} comments from today's data")
     
     # Sort by deadline date
     if not tab1_df.empty and 'Deadline Date' in tab1_df.columns:
@@ -430,7 +449,7 @@ def load_existing_excel(file_path):
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
     try:
-        # Load archive tab
+        # Load archive tab (needed for merging)
         archive_df = pd.read_excel(file_to_load, sheet_name="Archive")
         print_progress(f"Loaded {len(archive_df)} CAs from archive")
     except Exception as e:
@@ -438,12 +457,15 @@ def load_existing_excel(file_path):
         archive_df = pd.DataFrame()
     
     try:
-        # Load Tab 1 (Next 15 Days) to preserve comments
+        # Load Tab 1 (Next 15 Days) to get comments - this is the key for comment transfer
         tab1_df = pd.read_excel(file_to_load, sheet_name="Next 15 Days")
-        print_progress(f"Loaded {len(tab1_df)} CAs from Next 15 Days (with comments)")
+        print_progress(f"Loaded {len(tab1_df)} CAs from previous Next 15 Days tab")
         # Ensure Comments column exists
         if 'Comments' not in tab1_df.columns:
             tab1_df['Comments'] = ""
+        # Ensure Reference ID column exists for matching
+        if 'Reference ID' not in tab1_df.columns:
+            print_progress("Warning: Reference ID column not found in previous Next 15 Days tab")
     except Exception as e:
         print_progress(f"Could not load Next 15 Days tab: {str(e)}")
         tab1_df = pd.DataFrame()
