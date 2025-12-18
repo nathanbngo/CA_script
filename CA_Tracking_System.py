@@ -123,6 +123,7 @@ def run_ca_tracking(input_file=None, output_file=None, reset_archive=False):
     # Step 5: Load existing Excel archive from latest tracking file (if any)
     latest_tracking_file = None
     previous_tab1_df = pd.DataFrame()
+    previous_tab2_df = pd.DataFrame()
 
     if not reset_archive:
         try:
@@ -138,22 +139,31 @@ def run_ca_tracking(input_file=None, output_file=None, reset_archive=False):
                 except Exception as e:
                     print_progress(f"Could not load previous Next 15 Days tab: {str(e)}")
                     previous_tab1_df = pd.DataFrame()
+                try:
+                    print_progress(f"Loading 'Last 7 Days' tab from previous file for comment transfer")
+                    previous_tab2_df = pd.read_excel(latest_tracking_file, sheet_name="Last 7 Days", engine='openpyxl')
+                    print_progress(f"Loaded {len(previous_tab2_df)} CAs from previous Last 7 Days tab")
+                except Exception as e:
+                    print_progress(f"Could not load previous Last 7 Days tab: {str(e)}")
+                    previous_tab2_df = pd.DataFrame()
         except Exception:
             latest_tracking_file = None
             previous_tab1_df = pd.DataFrame()
+            previous_tab2_df = pd.DataFrame()
 
         existing_archive_df, _ = load_existing_excel(latest_tracking_file)
     else:
-        # Start fresh: no previous archive, no previous Tab 1 membership
+        # Start fresh: no previous archive, no previous Tab 1 or Tab 2 membership
         existing_archive_df = pd.DataFrame()
         previous_tab1_df = pd.DataFrame()
+        previous_tab2_df = pd.DataFrame()
 
     # Step 6: Merge ALL CAs with archive (add new, update if changed, preserve comments)
     archive_df, change_summary = merge_with_archive(df, existing_archive_df)
 
     # Step 7: Generate Tab 1 and Tab 2 FROM archive (apply filters + date criteria)
-    # Pass previous Tab 1 to transfer comments
-    tab1_df, tab2_df = generate_tabs_from_archive(archive_df, previous_tab1_df)
+    # Pass previous Tab 1 and Tab 2 to transfer comments
+    tab1_df, tab2_df = generate_tabs_from_archive(archive_df, previous_tab1_df, previous_tab2_df)
 
     # Compute Next 15 Days membership changes (based on Reference ID)
     def refid_set(df):
@@ -532,7 +542,7 @@ def determine_deadline_date(row):
     return None, None
 
 
-def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
+def generate_tabs_from_archive(archive_df, previous_tab1_df=None, previous_tab2_df=None):
     """Generate Tab 1 and Tab 2 from archive by applying filters and date criteria"""
     print_progress("Generating tabs from archive...")
     
@@ -544,7 +554,7 @@ def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
     
     # Create dictionary of previous Tab 1 comments by Reference ID
     # Only include CAs that are still within 15 days of current date
-    previous_comments = {}
+    previous_tab1_comments = {}
     if previous_tab1_df is not None and not previous_tab1_df.empty:
         if 'Reference ID' in previous_tab1_df.columns and 'Comments' in previous_tab1_df.columns and 'Deadline Date' in previous_tab1_df.columns:
             for idx, row in previous_tab1_df.iterrows():
@@ -566,11 +576,41 @@ def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
                         if pd.notna(ref_id) and ref_id != '' and TODAY <= deadline_date <= NEXT_15_DAYS:
                             comment_str = str(comment).strip() if pd.notna(comment) and str(comment).strip() != '' else ''
                             if comment_str:  # Only store non-empty comments
-                                previous_comments[ref_id] = comment_str
+                                previous_tab1_comments[ref_id] = comment_str
                     except:
                         continue
             
-            print_progress(f"Loaded {len(previous_comments)} comments from previous Next 15 Days tab (still within date range)")
+            print_progress(f"Loaded {len(previous_tab1_comments)} comments from previous Next 15 Days tab (still within date range)")
+    
+    # Create dictionary of previous Tab 2 comments by Reference ID
+    # Only include CAs that are still within last 7 days
+    previous_tab2_comments = {}
+    if previous_tab2_df is not None and not previous_tab2_df.empty:
+        if 'Reference ID' in previous_tab2_df.columns and 'Comments' in previous_tab2_df.columns and 'Deadline Date' in previous_tab2_df.columns:
+            for idx, row in previous_tab2_df.iterrows():
+                ref_id = str(row.get('Reference ID', '')).strip()
+                comment = row.get('Comments', '')
+                deadline_date = row.get('Deadline Date', None)
+                
+                # Parse deadline date and check if still within last 7 days
+                if pd.notna(deadline_date) and deadline_date != "":
+                    try:
+                        if isinstance(deadline_date, str):
+                            deadline_date = pd.to_datetime(deadline_date).date()
+                        elif isinstance(deadline_date, pd.Timestamp):
+                            deadline_date = deadline_date.date()
+                        elif isinstance(deadline_date, datetime):
+                            deadline_date = deadline_date.date()
+                        
+                        # Only include if still within last 7 days
+                        if pd.notna(ref_id) and ref_id != '' and LAST_7_DAYS <= deadline_date < TODAY:
+                            comment_str = str(comment).strip() if pd.notna(comment) and str(comment).strip() != '' else ''
+                            if comment_str:  # Only store non-empty comments
+                                previous_tab2_comments[ref_id] = comment_str
+                    except:
+                        continue
+            
+            print_progress(f"Loaded {len(previous_tab2_comments)} comments from previous Last 7 Days tab (still within date range)")
     
     tab1_data = []
     tab2_data = []
@@ -606,9 +646,9 @@ def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
             if has_today_comment:
                 # Use today's comment (override)
                 row_data['Comments'] = str(today_comment).strip()
-            elif ref_id in previous_comments:
+            elif ref_id in previous_tab1_comments:
                 # No today's comment, but previous tab had one - transfer it
-                row_data['Comments'] = previous_comments[ref_id]
+                row_data['Comments'] = previous_tab1_comments[ref_id]
             else:
                 # No comment from either source
                 row_data['Comments'] = ""
@@ -616,6 +656,23 @@ def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
             tab1_data.append(row_data)
         # Tab 2: Last 7 days (auto-remove after 7 days)
         elif LAST_7_DAYS <= deadline_date < TODAY:
+            ref_id = str(row_data.get('Reference ID', '')).strip()
+            today_comment = row_data.get('Comments', '')
+            
+            # Priority: Today's comment (if exists) overrides previous comment
+            # If no today's comment, transfer from previous tab if available
+            has_today_comment = (pd.notna(today_comment) and str(today_comment).strip() != '')
+            
+            if has_today_comment:
+                # Use today's comment (override)
+                row_data['Comments'] = str(today_comment).strip()
+            elif ref_id in previous_tab2_comments:
+                # No today's comment, but previous tab had one - transfer it
+                row_data['Comments'] = previous_tab2_comments[ref_id]
+            else:
+                # No comment from either source
+                row_data['Comments'] = ""
+            
             tab2_data.append(row_data)
     
     tab1_df = pd.DataFrame(tab1_data) if tab1_data else pd.DataFrame()
@@ -627,14 +684,23 @@ def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
     if not tab2_df.empty and 'Deadline Date' in tab2_df.columns:
         tab2_df = tab2_df.sort_values(by='Deadline Date')
     
-    # Count transferred comments
+    # Count transferred comments for Tab 1
     if not tab1_df.empty:
-        comments_transferred = sum(1 for idx, row in tab1_df.iterrows() 
+        comments_transferred_tab1 = sum(1 for idx, row in tab1_df.iterrows() 
                                  if str(row.get('Comments', '')).strip() != '' 
-                                 and str(row.get('Reference ID', '')).strip() in previous_comments
-                                 and str(row.get('Comments', '')).strip() == previous_comments.get(str(row.get('Reference ID', '')).strip(), ''))
-        if comments_transferred > 0:
-            print_progress(f"Transferred {comments_transferred} comments from previous Next 15 Days tab")
+                                 and str(row.get('Reference ID', '')).strip() in previous_tab1_comments
+                                 and str(row.get('Comments', '')).strip() == previous_tab1_comments.get(str(row.get('Reference ID', '')).strip(), ''))
+        if comments_transferred_tab1 > 0:
+            print_progress(f"Transferred {comments_transferred_tab1} comments from previous Next 15 Days tab")
+    
+    # Count transferred comments for Tab 2
+    if not tab2_df.empty:
+        comments_transferred_tab2 = sum(1 for idx, row in tab2_df.iterrows() 
+                                 if str(row.get('Comments', '')).strip() != '' 
+                                 and str(row.get('Reference ID', '')).strip() in previous_tab2_comments
+                                 and str(row.get('Comments', '')).strip() == previous_tab2_comments.get(str(row.get('Reference ID', '')).strip(), ''))
+        if comments_transferred_tab2 > 0:
+            print_progress(f"Transferred {comments_transferred_tab2} comments from previous Last 7 Days tab")
     
     print_progress(f"Tab 1 (Next 15 Days): {len(tab1_df)} CAs")
     print_progress(f"Tab 2 (Last 7 Days): {len(tab2_df)} CAs")
