@@ -61,35 +61,49 @@ def show_message(title, message, is_error=False):
 
 
 def find_latest_file(folder_path):
-    """Find the latest Excel file in the folder (only .xlsx files, not .xls)"""
-    print_progress(f"Searching for Excel files in: {folder_path}")
+    """Find the latest file in the folder (CSV, XLSX, or XLS)"""
+    print_progress(f"Searching for files in: {folder_path}")
     
     if not os.path.exists(folder_path):
         raise FileNotFoundError(f"Input folder not found: {folder_path}")
     
-    # Look for .xlsx files only (openpyxl doesn't support .xls)
+    # Look for CSV, XLSX, and XLS files
+    csv_files = glob.glob(os.path.join(folder_path, "*.csv"))
     xlsx_files = glob.glob(os.path.join(folder_path, "*.xlsx"))
+    xls_files = glob.glob(os.path.join(folder_path, "*.xls"))
     
-    if not xlsx_files:
-        raise FileNotFoundError(f"No .xlsx files found in: {folder_path}")
+    all_files = csv_files + xlsx_files + xls_files
+    
+    if not all_files:
+        raise FileNotFoundError(f"No CSV or Excel files found in: {folder_path}")
     
     # Get the most recently modified file
-    latest_file = max(xlsx_files, key=os.path.getmtime)
+    latest_file = max(all_files, key=os.path.getmtime)
     print_progress(f"Found latest file: {os.path.basename(latest_file)}")
     return latest_file
 
 
 def load_data(file_path):
-    """Load data from Excel file"""
+    """Load data from CSV or Excel file"""
     print_progress(f"Loading data from: {os.path.basename(file_path)}")
     
     file_ext = os.path.splitext(file_path)[1].lower()
     
-    if file_ext == '.xlsx':
+    if file_ext == '.csv':
+        # Read CSV file
+        df = pd.read_csv(file_path)
+    elif file_ext == '.xlsx':
         # Use openpyxl engine (already imported)
         df = pd.read_excel(file_path, engine='openpyxl')
+    elif file_ext == '.xls':
+        # Try to read .xls file without specifying engine (pandas may handle it)
+        # Note: This may require xlrd, but we'll try without it first
+        try:
+            df = pd.read_excel(file_path)
+        except Exception as e:
+            raise ValueError(f"Cannot read .xls file without xlrd. Please convert {os.path.basename(file_path)} to .xlsx or .csv format. Error: {str(e)}")
     else:
-        raise ValueError(f"Unsupported file format: {file_ext}. Expected .xlsx (openpyxl does not support .xls files)")
+        raise ValueError(f"Unsupported file format: {file_ext}. Expected .csv, .xls, or .xlsx")
     
     print_progress(f"Loaded {len(df)} rows")
     return df
