@@ -254,38 +254,22 @@ def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
     # First, apply filters to archive (same filters as before)
     filtered_df = apply_filters_to_archive(archive_df)
     
-    # Create a dictionary of previous Tab 1 CAs by Reference ID (with their comments and deadline dates)
-    # Only include CAs that are still within the next 15 days
+    # Create a dictionary of ALL previous Tab 1 CAs by Reference ID (with their comments)
+    # We include ALL CAs from previous tab, then match by Reference ID when generating new tab
     previous_cas_dict = {}
     if previous_tab1_df is not None and not previous_tab1_df.empty:
         if 'Reference ID' in previous_tab1_df.columns and 'Comments' in previous_tab1_df.columns:
             for idx, row in previous_tab1_df.iterrows():
                 ref_id = str(row.get('Reference ID', '')).strip()
                 comment = row.get('Comments', '')
-                deadline_date = row.get('Deadline Date', None)
                 
-                # Parse deadline date
-                if pd.notna(deadline_date) and deadline_date != "":
-                    try:
-                        if isinstance(deadline_date, str):
-                            deadline_date = pd.to_datetime(deadline_date).date()
-                        elif isinstance(deadline_date, pd.Timestamp):
-                            deadline_date = deadline_date.date()
-                        elif isinstance(deadline_date, datetime):
-                            deadline_date = deadline_date.date()
-                        
-                        # Only include if still within next 15 days
-                        if pd.notna(ref_id) and ref_id != '' and TODAY <= deadline_date <= NEXT_15_DAYS:
-                            comment_str = str(comment).strip() if pd.notna(comment) and str(comment).strip() != '' else ''
-                            previous_cas_dict[ref_id] = {
-                                'comment': comment_str,
-                                'deadline_date': deadline_date
-                            }
-                    except Exception as e:
-                        continue
+                # Include ALL CAs from previous tab (don't filter by date here)
+                if pd.notna(ref_id) and ref_id != '':
+                    comment_str = str(comment).strip() if pd.notna(comment) and str(comment).strip() != '' else ''
+                    previous_cas_dict[ref_id] = comment_str
             
-            comments_with_data = sum(1 for v in previous_cas_dict.values() if v['comment'] != '')
-            print_progress(f"Loaded {len(previous_cas_dict)} CAs from previous Next 15 Days tab (still within date range)")
+            comments_with_data = sum(1 for v in previous_cas_dict.values() if v != '')
+            print_progress(f"Loaded {len(previous_cas_dict)} CAs from previous Next 15 Days tab")
             print_progress(f"  - {comments_with_data} of these have comments to transfer")
     else:
         print_progress("No previous Next 15 Days tab found - starting fresh")
@@ -320,7 +304,7 @@ def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
             # So we copy directly from the previous "Next 15 Days" tab
             if ref_id in previous_cas_dict:
                 # Previous Next 15 Days tab had this CA - copy its comment
-                previous_comment = previous_cas_dict[ref_id]['comment']
+                previous_comment = previous_cas_dict[ref_id]
                 row_data['Comments'] = previous_comment if previous_comment else ""
             else:
                 # CA not in previous tab - no comment to transfer
@@ -337,15 +321,25 @@ def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
     # Count how many comments were transferred
     if not tab1_df.empty:
         comments_transferred = 0
+        matched_ref_ids = 0
+        unmatched_ref_ids = []
         for idx, row in tab1_df.iterrows():
             ref_id = str(row.get('Reference ID', '')).strip()
             comment = str(row.get('Comments', ''))
-            if comment.strip() != '':
-                comments_transferred += 1
+            if ref_id in previous_cas_dict:
+                matched_ref_ids += 1
+                if comment.strip() != '':
+                    comments_transferred += 1
+            else:
+                unmatched_ref_ids.append(ref_id)
+        
+        print_progress(f"Matched {matched_ref_ids} CAs by Reference ID from previous tab")
         if comments_transferred > 0:
             print_progress(f"Transferred {comments_transferred} comments from previous Next 15 Days tab")
         else:
-            print_progress("No comments were transferred (no matching CAs or no comments in previous tab)")
+            print_progress("No comments were transferred (no comments in previous tab for matched CAs)")
+        if unmatched_ref_ids and len(unmatched_ref_ids) <= 5:
+            print_progress(f"Unmatched Reference IDs (sample): {unmatched_ref_ids[:5]}")
     
     # Sort by deadline date
     if not tab1_df.empty and 'Deadline Date' in tab1_df.columns:
@@ -478,11 +472,13 @@ def load_existing_excel(file_path):
     
     try:
         # Load Tab 1 (Next 15 Days) to get comments - this is the key for comment transfer
+        print_progress(f"Attempting to load 'Next 15 Days' sheet from {os.path.basename(file_to_load)}")
         tab1_df = pd.read_excel(file_to_load, sheet_name="Next 15 Days")
-        print_progress(f"Loaded {len(tab1_df)} CAs from previous Next 15 Days tab")
+        print_progress(f"Successfully loaded {len(tab1_df)} CAs from previous Next 15 Days tab (Tab 1)")
         # Ensure Comments column exists
         if 'Comments' not in tab1_df.columns:
             tab1_df['Comments'] = ""
+            print_progress("Warning: Comments column not found, created empty column")
         # Ensure Reference ID column exists for matching
         if 'Reference ID' not in tab1_df.columns:
             print_progress("Warning: Reference ID column not found in previous Next 15 Days tab")
@@ -496,7 +492,8 @@ def load_existing_excel(file_path):
                         comments_count += 1
             print_progress(f"Found {comments_count} CAs with comments in previous Next 15 Days tab")
     except Exception as e:
-        print_progress(f"Could not load Next 15 Days tab: {str(e)}")
+        print_progress(f"ERROR: Could not load Next 15 Days tab: {str(e)}")
+        print_progress("This means comments cannot be transferred!")
         tab1_df = pd.DataFrame()
     
     try:
