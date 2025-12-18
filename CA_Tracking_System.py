@@ -105,8 +105,14 @@ def extract_columns(df):
     if missing_cols:
         raise ValueError(f"Missing required columns: {missing_cols}")
     
-    # Extract columns
-    output = df[REQUIRED_COLUMNS].copy()
+    # Extract required columns
+    columns_to_extract = REQUIRED_COLUMNS.copy()
+    
+    # Also include Comments if it exists in the input data
+    if 'Comments' in df.columns:
+        columns_to_extract.append('Comments')
+    
+    output = df[columns_to_extract].copy()
     
     # Remove rows where all key columns are empty
     output = output.dropna(subset=["Security ID", "Security Name"], how='all')
@@ -387,7 +393,14 @@ def merge_with_archive(new_df, existing_archive_df):
     if existing_archive_df.empty:
         # First time - all new data goes to archive
         new_df = new_df.copy()
-        new_df['Comments'] = ""
+        # Handle Comments: use from input data if provided, otherwise set to empty
+        if 'Comments' not in new_df.columns:
+            new_df['Comments'] = ""
+        else:
+            # Ensure Comments column exists and clean up values
+            new_df['Comments'] = new_df['Comments'].apply(
+                lambda x: str(x).strip() if pd.notna(x) and str(x).strip() != '' else ""
+            )
         # Add deadline date and type columns
         deadline_dates = []
         deadline_types = []
@@ -430,8 +443,25 @@ def merge_with_archive(new_df, existing_archive_df):
             # Reference ID exists - check if data changed
             existing_idx, existing_row = existing_dict[ref_id]
             
+            # Handle Comments: use new comment if provided, otherwise preserve old comment
+            new_comment = row.get('Comments', '')
+            existing_comment = existing_row.get('Comments', '')
+            
+            # Check if new comment is valid (not empty, not NaN)
+            has_new_comment = (pd.notna(new_comment) and 
+                              str(new_comment).strip() != '' and 
+                              'Comments' in row.index)
+            
+            if has_new_comment:
+                # Use new comment
+                archive_df.at[existing_idx, 'Comments'] = str(new_comment).strip()
+            else:
+                # Preserve old comment (if it exists)
+                if pd.notna(existing_comment) and str(existing_comment).strip() != '':
+                    archive_df.at[existing_idx, 'Comments'] = existing_comment
+            
             if data_changed(row, existing_row):
-                # Data changed - update fields but preserve Comments
+                # Data changed - update fields (Comments already handled above)
                 for col in row.index:
                     if col != 'Comments':
                         archive_df.at[existing_idx, col] = row[col]
@@ -445,9 +475,13 @@ def merge_with_archive(new_df, existing_archive_df):
                 archive_df.at[existing_idx, 'Deadline Type'] = deadline_type if deadline_type else ""
                 skipped_count += 1
         else:
-            # New CA - add to archive with empty comment
+            # New CA - add to archive
             new_row = row.copy()
-            new_row['Comments'] = ""
+            # Use comment from input data if provided, otherwise set to empty
+            if 'Comments' in row.index and pd.notna(row.get('Comments', '')) and str(row.get('Comments', '')).strip() != '':
+                new_row['Comments'] = str(row.get('Comments', '')).strip()
+            else:
+                new_row['Comments'] = ""
             archive_df = pd.concat([archive_df, pd.DataFrame([new_row])], ignore_index=True)
             added_count += 1
     
