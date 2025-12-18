@@ -263,6 +263,8 @@ def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
                 if pd.notna(ref_id) and ref_id != '' and pd.notna(comment) and str(comment).strip() != '':
                     previous_comments[ref_id] = str(comment).strip()
             print_progress(f"Loaded {len(previous_comments)} comments from previous Next 15 Days tab")
+    else:
+        print_progress("No previous Next 15 Days tab found - starting fresh")
     
     tab1_data = []
     tab2_data = []
@@ -288,13 +290,23 @@ def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
         
         # Tab 1: Next 15 days
         if TODAY <= deadline_date <= NEXT_15_DAYS:
-            # Preserve comment from previous Tab 1 if archive comment is empty
             ref_id = str(row_data.get('Reference ID', ''))
             archive_comment = row_data.get('Comments', '')
             
-            # If archive has no comment but previous Tab 1 had a comment, use previous comment
-            if (pd.isna(archive_comment) or str(archive_comment).strip() == '') and ref_id in previous_comments:
+            # Check if archive has a valid comment (from new data - this overrides)
+            has_archive_comment = (pd.notna(archive_comment) and 
+                                  str(archive_comment).strip() != '')
+            
+            if has_archive_comment:
+                # Use archive comment (from new data) - this overrides previous comments
+                row_data['Comments'] = str(archive_comment).strip()
+            elif ref_id in previous_comments:
+                # No archive comment, but previous Tab 1 had a comment - carry it over
                 row_data['Comments'] = previous_comments[ref_id]
+            else:
+                # No comment from either source - ensure it's empty string
+                if 'Comments' not in row_data or pd.isna(row_data.get('Comments', '')):
+                    row_data['Comments'] = ""
             
             tab1_data.append(row_data)
         # Tab 2: Last 7 days (auto-remove after 7 days)
@@ -363,32 +375,68 @@ def prepare_output_columns(df):
     return df[output_cols]
 
 
+def find_most_recent_excel(folder_path):
+    """Find the most recent Excel file in the folder (including backups)"""
+    if not os.path.exists(folder_path):
+        return None
+    
+    # Look for CA_Tracking.xlsx files (main file and backups)
+    xlsx_files = glob.glob(os.path.join(folder_path, "CA_Tracking*.xlsx"))
+    
+    if not xlsx_files:
+        return None
+    
+    # Get the most recently modified file
+    most_recent = max(xlsx_files, key=os.path.getmtime)
+    return most_recent
+
+
 def load_existing_excel(file_path):
     """Load existing Excel file if it exists"""
-    if not os.path.exists(file_path):
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    # Use the main OUTPUT_FILE first (this is the file from the previous script run)
+    # Only fall back to most recent file if main file doesn't exist
+    output_folder = os.path.dirname(file_path)
     
-    print_progress("Loading existing Excel file...")
+    if os.path.exists(file_path):
+        file_to_load = file_path
+        print_progress(f"Loading existing Excel file: {os.path.basename(file_path)}")
+    else:
+        # Main file doesn't exist, try to find most recent backup
+        most_recent_file = find_most_recent_excel(output_folder)
+        if most_recent_file:
+            file_to_load = most_recent_file
+            print_progress(f"Main file not found, using most recent: {os.path.basename(most_recent_file)}")
+        else:
+            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    
+    if not os.path.exists(file_to_load):
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
     try:
         # Load archive tab
-        archive_df = pd.read_excel(file_path, sheet_name="Archive")
+        archive_df = pd.read_excel(file_to_load, sheet_name="Archive")
         print_progress(f"Loaded {len(archive_df)} CAs from archive")
-    except:
+    except Exception as e:
+        print_progress(f"Could not load Archive tab: {str(e)}")
         archive_df = pd.DataFrame()
     
     try:
         # Load Tab 1 (Next 15 Days) to preserve comments
-        tab1_df = pd.read_excel(file_path, sheet_name="Next 15 Days")
-        print_progress(f"Loaded {len(tab1_df)} CAs from Next 15 Days")
-    except:
+        tab1_df = pd.read_excel(file_to_load, sheet_name="Next 15 Days")
+        print_progress(f"Loaded {len(tab1_df)} CAs from Next 15 Days (with comments)")
+        # Ensure Comments column exists
+        if 'Comments' not in tab1_df.columns:
+            tab1_df['Comments'] = ""
+    except Exception as e:
+        print_progress(f"Could not load Next 15 Days tab: {str(e)}")
         tab1_df = pd.DataFrame()
     
     try:
         # Load Tab 2 to preserve manual removals
-        tab2_df = pd.read_excel(file_path, sheet_name="Last 7 Days")
+        tab2_df = pd.read_excel(file_to_load, sheet_name="Last 7 Days")
         print_progress(f"Loaded {len(tab2_df)} CAs from Tab 2")
-    except:
+    except Exception as e:
+        print_progress(f"Could not load Last 7 Days tab: {str(e)}")
         tab2_df = pd.DataFrame()
     
     return archive_df, tab1_df, tab2_df
