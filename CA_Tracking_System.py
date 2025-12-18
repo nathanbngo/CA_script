@@ -471,17 +471,17 @@ def load_existing_excel(file_path):
         archive_df = pd.DataFrame()
     
     try:
-        # Load Tab 1 (Next 15 Days) to get comments - this is the key for comment transfer
-        print_progress(f"Attempting to load 'Next 15 Days' sheet from {os.path.basename(file_to_load)}")
+        # Load Tab 1 (Next 15 Days) to get comments - THIS IS WHERE COMMENTS COME FROM
+        print_progress(f"*** Loading 'Next 15 Days' sheet (Tab 1) for comment transfer ***")
         tab1_df = pd.read_excel(file_to_load, sheet_name="Next 15 Days")
-        print_progress(f"Successfully loaded {len(tab1_df)} CAs from previous Next 15 Days tab (Tab 1)")
+        print_progress(f"✓ Successfully loaded {len(tab1_df)} CAs from previous Next 15 Days tab (Tab 1) - THIS IS FOR COMMENTS")
         # Ensure Comments column exists
         if 'Comments' not in tab1_df.columns:
             tab1_df['Comments'] = ""
             print_progress("Warning: Comments column not found, created empty column")
         # Ensure Reference ID column exists for matching
         if 'Reference ID' not in tab1_df.columns:
-            print_progress("Warning: Reference ID column not found in previous Next 15 Days tab")
+            print_progress("ERROR: Reference ID column not found in previous Next 15 Days tab - cannot match comments!")
         else:
             # Debug: count how many have comments
             comments_count = 0
@@ -490,16 +490,16 @@ def load_existing_excel(file_path):
                     comment = row.get('Comments', '')
                     if pd.notna(comment) and str(comment).strip() != '':
                         comments_count += 1
-            print_progress(f"Found {comments_count} CAs with comments in previous Next 15 Days tab")
+            print_progress(f"✓ Found {comments_count} CAs with comments in previous Next 15 Days tab (ready to transfer)")
     except Exception as e:
-        print_progress(f"ERROR: Could not load Next 15 Days tab: {str(e)}")
-        print_progress("This means comments cannot be transferred!")
+        print_progress(f"*** ERROR: Could not load Next 15 Days tab: {str(e)} ***")
+        print_progress("*** This means comments CANNOT be transferred! ***")
         tab1_df = pd.DataFrame()
     
     try:
-        # Load Tab 2 to preserve manual removals
+        # Load Tab 2 (Last 7 Days) - this is NOT used for comments, only for other data
         tab2_df = pd.read_excel(file_to_load, sheet_name="Last 7 Days")
-        print_progress(f"Loaded {len(tab2_df)} CAs from Tab 2")
+        print_progress(f"Loaded {len(tab2_df)} CAs from Tab 2 (Last 7 Days) - NOT used for comment transfer")
     except Exception as e:
         print_progress(f"Could not load Last 7 Days tab: {str(e)}")
         tab2_df = pd.DataFrame()
