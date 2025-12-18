@@ -6,6 +6,7 @@ Processes daily CA files and creates Excel workbook with upcoming, recent, and a
 import pandas as pd
 import os
 import glob
+import re
 from datetime import datetime, timedelta, date
 from pathlib import Path
 import tkinter as tk
@@ -376,38 +377,54 @@ def prepare_output_columns(df):
 
 
 def find_most_recent_excel(folder_path):
-    """Find the most recent Excel file in the folder (including backups)"""
+    """Find the most recent Excel file in the folder with CA_Tracking_YYYYMMDD_HHMMSS pattern"""
     if not os.path.exists(folder_path):
         return None
     
-    # Look for CA_Tracking.xlsx files (main file and backups)
-    xlsx_files = glob.glob(os.path.join(folder_path, "CA_Tracking*.xlsx"))
+    # Look for CA_Tracking files with date pattern: CA_Tracking_YYYYMMDD_HHMMSS.xlsx
+    # This pattern matches files like: CA_Tracking_20241217_125653.xlsx
+    xlsx_files = glob.glob(os.path.join(folder_path, "CA_Tracking_*.xlsx"))
     
     if not xlsx_files:
+        # Fallback: also check for CA_Tracking.xlsx (main file without date)
+        main_file = os.path.join(folder_path, "CA_Tracking.xlsx")
+        if os.path.exists(main_file):
+            return main_file
         return None
     
-    # Get the most recently modified file
-    most_recent = max(xlsx_files, key=os.path.getmtime)
+    # Filter to only files with date pattern (YYYYMMDD_HHMMSS) - exclude backup files
+    # Pattern: CA_Tracking_ followed by 8 digits, underscore, 6 digits
+    date_pattern_files = []
+    for file in xlsx_files:
+        filename = os.path.basename(file)
+        # Match pattern: CA_Tracking_YYYYMMDD_HHMMSS.xlsx
+        if re.match(r'CA_Tracking_\d{8}_\d{6}\.xlsx$', filename):
+            date_pattern_files.append(file)
+        # Also include CA_Tracking.xlsx if it exists
+        elif filename == "CA_Tracking.xlsx":
+            date_pattern_files.append(file)
+    
+    if not date_pattern_files:
+        return None
+    
+    # Get the most recently modified file (this will be the most recent run)
+    most_recent = max(date_pattern_files, key=os.path.getmtime)
     return most_recent
 
 
 def load_existing_excel(file_path):
-    """Load existing Excel file if it exists"""
-    # Use the main OUTPUT_FILE first (this is the file from the previous script run)
-    # Only fall back to most recent file if main file doesn't exist
+    """Load existing Excel file from the most recent run (CA_Tracking_YYYYMMDD_HHMMSS.xlsx)"""
     output_folder = os.path.dirname(file_path)
     
-    if os.path.exists(file_path):
-        file_to_load = file_path
-        print_progress(f"Loading existing Excel file: {os.path.basename(file_path)}")
-    else:
-        # Main file doesn't exist, try to find most recent backup
-        most_recent_file = find_most_recent_excel(output_folder)
-        if most_recent_file:
-            file_to_load = most_recent_file
-            print_progress(f"Main file not found, using most recent: {os.path.basename(most_recent_file)}")
-        else:
-            return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    # Find the most recent file with date pattern (this is the previous run's output)
+    most_recent_file = find_most_recent_excel(output_folder)
+    
+    if not most_recent_file:
+        print_progress("No previous CA_Tracking file found - starting fresh")
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    
+    file_to_load = most_recent_file
+    print_progress(f"Loading previous run's file: {os.path.basename(file_to_load)}")
     
     if not os.path.exists(file_to_load):
         return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
@@ -460,9 +477,20 @@ def data_changed(new_row, existing_row, exclude_cols=['Comments', 'Deadline Date
     return False
 
 
-def merge_with_archive(new_df, existing_archive_df):
+def merge_with_archive(new_df, existing_archive_df, previous_tab1_df=None):
     """Merge new data with archive, preserving comments and only updating if data changed"""
     print_progress("Merging with archive...")
+    
+    # Create a dictionary of previous Tab 1 comments by Reference ID (for fallback)
+    previous_tab1_comments = {}
+    if previous_tab1_df is not None and not previous_tab1_df.empty:
+        if 'Reference ID' in previous_tab1_df.columns and 'Comments' in previous_tab1_df.columns:
+            for idx, row in previous_tab1_df.iterrows():
+                ref_id = str(row.get('Reference ID', ''))
+                comment = row.get('Comments', '')
+                if pd.notna(ref_id) and ref_id != '' and pd.notna(comment) and str(comment).strip() != '':
+                    previous_tab1_comments[ref_id] = str(comment).strip()
+            print_progress(f"Loaded {len(previous_tab1_comments)} comments from previous Next 15 Days tab for archive merge")
     
     if existing_archive_df.empty:
         # First time - all new data goes to archive
@@ -501,6 +529,7 @@ def merge_with_archive(new_df, existing_archive_df):
     added_count = 0
     updated_count = 0
     skipped_count = 0
+    comments_merged_from_tab1 = 0
     
     for idx, row in new_df.iterrows():
         ref_id = str(row.get('Reference ID', ''))
@@ -527,12 +556,19 @@ def merge_with_archive(new_df, existing_archive_df):
                               'Comments' in row.index)
             
             if has_new_comment:
-                # Use new comment
+                # Use new comment (from input data - highest priority)
                 archive_df.at[existing_idx, 'Comments'] = str(new_comment).strip()
             else:
-                # Preserve old comment (if it exists)
+                # No new comment - preserve existing archive comment if it exists
                 if pd.notna(existing_comment) and str(existing_comment).strip() != '':
                     archive_df.at[existing_idx, 'Comments'] = existing_comment
+                elif ref_id in previous_tab1_comments:
+                    # No archive comment, but previous Tab 1 had a comment - use it
+                    archive_df.at[existing_idx, 'Comments'] = previous_tab1_comments[ref_id]
+                    comments_merged_from_tab1 += 1
+                else:
+                    # No comment from any source
+                    archive_df.at[existing_idx, 'Comments'] = ""
             
             if data_changed(row, existing_row):
                 # Data changed - update fields (Comments already handled above)
@@ -560,6 +596,8 @@ def merge_with_archive(new_df, existing_archive_df):
             added_count += 1
     
     print_progress(f"Archive: {added_count} added, {updated_count} updated, {skipped_count} unchanged")
+    if comments_merged_from_tab1 > 0:
+        print_progress(f"Merged {comments_merged_from_tab1} comments from previous Next 15 Days tab into archive")
     print_progress(f"Archive now contains {len(archive_df)} CAs")
     return archive_df
 
@@ -727,7 +765,8 @@ def main():
         existing_archive_df, previous_tab1_df, _ = load_existing_excel(OUTPUT_FILE)
         
         # Step 6: Merge ALL CAs with archive (add new, update if changed, preserve comments)
-        archive_df = merge_with_archive(df, existing_archive_df)
+        # Pass previous Tab 1 to merge comments from previous "Next 15 Days" tab into archive
+        archive_df = merge_with_archive(df, existing_archive_df, previous_tab1_df)
         
         # Step 7: Generate Tab 1 and Tab 2 FROM archive (apply filters + date criteria)
         # Pass previous Tab 1 to preserve comments for Next 15 Days CAs
