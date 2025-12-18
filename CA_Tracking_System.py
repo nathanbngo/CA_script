@@ -89,9 +89,12 @@ def load_data(file_path):
     file_ext = os.path.splitext(file_path)[1].lower()
     
     if file_ext in ['.xls', '.xlsx']:
-        df = pd.read_excel(file_path)
+        # Use openpyxl engine (already imported) - only works with .xlsx files
+        if file_ext == '.xls':
+            raise ValueError("Please convert .xls files to .xlsx format. openpyxl does not support .xls files.")
+        df = pd.read_excel(file_path, engine='openpyxl')
     else:
-        raise ValueError(f"Unsupported file format: {file_ext}. Expected .xls or .xlsx")
+        raise ValueError(f"Unsupported file format: {file_ext}. Expected .xlsx")
     
     print_progress(f"Loaded {len(df)} rows")
     return df
@@ -464,7 +467,7 @@ def load_existing_excel(file_path):
     
     try:
         # Load archive tab (needed for merging)
-        archive_df = pd.read_excel(file_to_load, sheet_name="Archive")
+        archive_df = pd.read_excel(file_to_load, sheet_name="Archive", engine='openpyxl')
         print_progress(f"Loaded {len(archive_df)} CAs from archive")
     except Exception as e:
         print_progress(f"Could not load Archive tab: {str(e)}")
@@ -473,7 +476,7 @@ def load_existing_excel(file_path):
     try:
         # Load Tab 1 (Next 15 Days) to get comments - THIS IS WHERE COMMENTS COME FROM
         print_progress(f"*** Loading 'Next 15 Days' sheet (Tab 1) for comment transfer ***")
-        tab1_df = pd.read_excel(file_to_load, sheet_name="Next 15 Days")
+        tab1_df = pd.read_excel(file_to_load, sheet_name="Next 15 Days", engine='openpyxl')
         print_progress(f"✓ Successfully loaded {len(tab1_df)} CAs from previous Next 15 Days tab (Tab 1) - THIS IS FOR COMMENTS")
         # Ensure Comments column exists
         if 'Comments' not in tab1_df.columns:
@@ -498,7 +501,7 @@ def load_existing_excel(file_path):
     
     try:
         # Load Tab 2 (Last 7 Days) - this is NOT used for comments, only for other data
-        tab2_df = pd.read_excel(file_to_load, sheet_name="Last 7 Days")
+        tab2_df = pd.read_excel(file_to_load, sheet_name="Last 7 Days", engine='openpyxl')
         print_progress(f"Loaded {len(tab2_df)} CAs from Tab 2 (Last 7 Days) - NOT used for comment transfer")
     except Exception as e:
         print_progress(f"Could not load Last 7 Days tab: {str(e)}")
