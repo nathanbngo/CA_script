@@ -254,18 +254,36 @@ def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
     # First, apply filters to archive (same filters as before)
     filtered_df = apply_filters_to_archive(archive_df)
     
-    # Create a dictionary of previous Tab 1 comments by Reference ID
-    # This will be used to transfer comments for CAs that are in the Next 15 Days
-    previous_comments = {}
+    # Create a dictionary of previous Tab 1 CAs by Reference ID (with their comments and deadline dates)
+    # Only include CAs that are still within the next 15 days
+    previous_cas_dict = {}
     if previous_tab1_df is not None and not previous_tab1_df.empty:
         if 'Reference ID' in previous_tab1_df.columns and 'Comments' in previous_tab1_df.columns:
             for idx, row in previous_tab1_df.iterrows():
                 ref_id = str(row.get('Reference ID', ''))
                 comment = row.get('Comments', '')
-                # Only store non-empty comments
-                if pd.notna(ref_id) and ref_id != '' and pd.notna(comment) and str(comment).strip() != '':
-                    previous_comments[ref_id] = str(comment).strip()
-            print_progress(f"Loaded {len(previous_comments)} comments from previous Next 15 Days tab for transfer")
+                deadline_date = row.get('Deadline Date', None)
+                
+                # Parse deadline date
+                if pd.notna(deadline_date) and deadline_date != "":
+                    try:
+                        if isinstance(deadline_date, str):
+                            deadline_date = pd.to_datetime(deadline_date).date()
+                        elif isinstance(deadline_date, pd.Timestamp):
+                            deadline_date = deadline_date.date()
+                        elif isinstance(deadline_date, datetime):
+                            deadline_date = deadline_date.date()
+                        
+                        # Only include if still within next 15 days
+                        if pd.notna(ref_id) and ref_id != '' and TODAY <= deadline_date <= NEXT_15_DAYS:
+                            previous_cas_dict[ref_id] = {
+                                'comment': str(comment).strip() if pd.notna(comment) and str(comment).strip() != '' else '',
+                                'deadline_date': deadline_date
+                            }
+                    except:
+                        continue
+            
+            print_progress(f"Loaded {len(previous_cas_dict)} CAs from previous Next 15 Days tab (still within date range)")
     else:
         print_progress("No previous Next 15 Days tab found - starting fresh")
     
@@ -297,16 +315,20 @@ def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
             archive_comment = row_data.get('Comments', '')
             
             # Priority: Today's comment (from archive/new data) overrides previous comment
-            # If no today's comment, check if previous Next 15 Days tab had a comment
+            # If no today's comment, copy comment from previous Next 15 Days tab if it exists
             has_archive_comment = (pd.notna(archive_comment) and 
                                   str(archive_comment).strip() != '')
             
             if has_archive_comment:
                 # Use today's comment (from new data) - this overrides previous comments
                 row_data['Comments'] = str(archive_comment).strip()
-            elif ref_id in previous_comments:
-                # No today's comment, but previous Next 15 Days tab had a comment - transfer it
-                row_data['Comments'] = previous_comments[ref_id]
+            elif ref_id in previous_cas_dict:
+                # No today's comment, but previous Next 15 Days tab had this CA with a comment - copy it
+                previous_comment = previous_cas_dict[ref_id]['comment']
+                if previous_comment:
+                    row_data['Comments'] = previous_comment
+                else:
+                    row_data['Comments'] = ""
             else:
                 # No comment from either source - ensure it's empty string
                 row_data['Comments'] = ""
@@ -327,7 +349,7 @@ def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
             ref_id = str(row.get('Reference ID', ''))
             comment = str(row.get('Comments', ''))
             if comment.strip() != '':
-                if ref_id in previous_comments and comment == previous_comments[ref_id]:
+                if ref_id in previous_cas_dict and comment == previous_cas_dict[ref_id]['comment']:
                     comments_transferred += 1
                 else:
                     comments_from_today += 1
@@ -395,7 +417,7 @@ def prepare_output_columns(df):
     return df[output_cols]
 
 
-def find_most_recent_excel(folder_path):
+def find_most_recent_excel(folder_path, exclude_today=True):
     """Find the most recent Excel file in the folder with CA_Tracking_YYYYMMDD_HHMMSS pattern"""
     if not os.path.exists(folder_path):
         return None
@@ -414,19 +436,28 @@ def find_most_recent_excel(folder_path):
     # Filter to only files with date pattern (YYYYMMDD_HHMMSS) - exclude backup files
     # Pattern: CA_Tracking_ followed by 8 digits, underscore, 6 digits
     date_pattern_files = []
+    today_str = TODAY.strftime('%Y%m%d')
+    
     for file in xlsx_files:
         filename = os.path.basename(file)
         # Match pattern: CA_Tracking_YYYYMMDD_HHMMSS.xlsx
         if re.match(r'CA_Tracking_\d{8}_\d{6}\.xlsx$', filename):
+            # Extract date from filename
+            date_match = re.search(r'CA_Tracking_(\d{8})_\d{6}\.xlsx$', filename)
+            if date_match:
+                file_date = date_match.group(1)
+                # Exclude today's files if requested
+                if exclude_today and file_date == today_str:
+                    continue
             date_pattern_files.append(file)
-        # Also include CA_Tracking.xlsx if it exists
-        elif filename == "CA_Tracking.xlsx":
+        # Also include CA_Tracking.xlsx if it exists (and not excluding today)
+        elif filename == "CA_Tracking.xlsx" and not exclude_today:
             date_pattern_files.append(file)
     
     if not date_pattern_files:
         return None
     
-    # Get the most recently modified file (this will be the most recent run)
+    # Get the most recently modified file (this will be the most recent run, excluding today)
     most_recent = max(date_pattern_files, key=os.path.getmtime)
     return most_recent
 
@@ -435,8 +466,8 @@ def load_existing_excel(file_path):
     """Load existing Excel file from the most recent run (CA_Tracking_YYYYMMDD_HHMMSS.xlsx)"""
     output_folder = os.path.dirname(file_path)
     
-    # Find the most recent file with date pattern (this is the previous run's output)
-    most_recent_file = find_most_recent_excel(output_folder)
+    # Find the most recent file with date pattern (excluding today's files)
+    most_recent_file = find_most_recent_excel(output_folder, exclude_today=True)
     
     if not most_recent_file:
         print_progress("No previous CA_Tracking file found - starting fresh")
