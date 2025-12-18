@@ -132,8 +132,11 @@ def run_ca_tracking(input_file=None, output_file=None, reset_archive=False):
                 latest_tracking_file = max(candidates, key=os.path.getmtime)
                 print_progress(f"Latest tracking file detected: {os.path.basename(latest_tracking_file)}")
                 try:
-                    previous_tab1_df = pd.read_excel(latest_tracking_file, sheet_name="Next 15 Days")
-                except Exception:
+                    print_progress(f"Loading 'Next 15 Days' tab from previous file for comment transfer")
+                    previous_tab1_df = pd.read_excel(latest_tracking_file, sheet_name="Next 15 Days", engine='openpyxl')
+                    print_progress(f"Loaded {len(previous_tab1_df)} CAs from previous Next 15 Days tab")
+                except Exception as e:
+                    print_progress(f"Could not load previous Next 15 Days tab: {str(e)}")
                     previous_tab1_df = pd.DataFrame()
         except Exception:
             latest_tracking_file = None
@@ -149,7 +152,8 @@ def run_ca_tracking(input_file=None, output_file=None, reset_archive=False):
     archive_df, change_summary = merge_with_archive(df, existing_archive_df)
 
     # Step 7: Generate Tab 1 and Tab 2 FROM archive (apply filters + date criteria)
-    tab1_df, tab2_df = generate_tabs_from_archive(archive_df)
+    # Pass previous Tab 1 to transfer comments
+    tab1_df, tab2_df = generate_tabs_from_archive(archive_df, previous_tab1_df)
 
     # Compute Next 15 Days membership changes (based on Reference ID)
     def refid_set(df):
@@ -528,7 +532,7 @@ def determine_deadline_date(row):
     return None, None
 
 
-def generate_tabs_from_archive(archive_df):
+def generate_tabs_from_archive(archive_df, previous_tab1_df=None):
     """Generate Tab 1 and Tab 2 from archive by applying filters and date criteria"""
     print_progress("Generating tabs from archive...")
     
@@ -537,6 +541,36 @@ def generate_tabs_from_archive(archive_df):
     
     # First, apply filters to archive (same filters as before)
     filtered_df = apply_filters_to_archive(archive_df)
+    
+    # Create dictionary of previous Tab 1 comments by Reference ID
+    # Only include CAs that are still within 15 days of current date
+    previous_comments = {}
+    if previous_tab1_df is not None and not previous_tab1_df.empty:
+        if 'Reference ID' in previous_tab1_df.columns and 'Comments' in previous_tab1_df.columns and 'Deadline Date' in previous_tab1_df.columns:
+            for idx, row in previous_tab1_df.iterrows():
+                ref_id = str(row.get('Reference ID', '')).strip()
+                comment = row.get('Comments', '')
+                deadline_date = row.get('Deadline Date', None)
+                
+                # Parse deadline date and check if still within 15 days
+                if pd.notna(deadline_date) and deadline_date != "":
+                    try:
+                        if isinstance(deadline_date, str):
+                            deadline_date = pd.to_datetime(deadline_date).date()
+                        elif isinstance(deadline_date, pd.Timestamp):
+                            deadline_date = deadline_date.date()
+                        elif isinstance(deadline_date, datetime):
+                            deadline_date = deadline_date.date()
+                        
+                        # Only include if still within next 15 days
+                        if pd.notna(ref_id) and ref_id != '' and TODAY <= deadline_date <= NEXT_15_DAYS:
+                            comment_str = str(comment).strip() if pd.notna(comment) and str(comment).strip() != '' else ''
+                            if comment_str:  # Only store non-empty comments
+                                previous_comments[ref_id] = comment_str
+                    except:
+                        continue
+            
+            print_progress(f"Loaded {len(previous_comments)} comments from previous Next 15 Days tab (still within date range)")
     
     tab1_data = []
     tab2_data = []
@@ -562,6 +596,23 @@ def generate_tabs_from_archive(archive_df):
         
         # Tab 1: Next 15 days
         if TODAY <= deadline_date <= NEXT_15_DAYS:
+            ref_id = str(row_data.get('Reference ID', '')).strip()
+            today_comment = row_data.get('Comments', '')
+            
+            # Priority: Today's comment (if exists) overrides previous comment
+            # If no today's comment, transfer from previous tab if available
+            has_today_comment = (pd.notna(today_comment) and str(today_comment).strip() != '')
+            
+            if has_today_comment:
+                # Use today's comment (override)
+                row_data['Comments'] = str(today_comment).strip()
+            elif ref_id in previous_comments:
+                # No today's comment, but previous tab had one - transfer it
+                row_data['Comments'] = previous_comments[ref_id]
+            else:
+                # No comment from either source
+                row_data['Comments'] = ""
+            
             tab1_data.append(row_data)
         # Tab 2: Last 7 days (auto-remove after 7 days)
         elif LAST_7_DAYS <= deadline_date < TODAY:
@@ -575,6 +626,15 @@ def generate_tabs_from_archive(archive_df):
         tab1_df = tab1_df.sort_values(by='Deadline Date')
     if not tab2_df.empty and 'Deadline Date' in tab2_df.columns:
         tab2_df = tab2_df.sort_values(by='Deadline Date')
+    
+    # Count transferred comments
+    if not tab1_df.empty:
+        comments_transferred = sum(1 for idx, row in tab1_df.iterrows() 
+                                 if str(row.get('Comments', '')).strip() != '' 
+                                 and str(row.get('Reference ID', '')).strip() in previous_comments
+                                 and str(row.get('Comments', '')).strip() == previous_comments.get(str(row.get('Reference ID', '')).strip(), ''))
+        if comments_transferred > 0:
+            print_progress(f"Transferred {comments_transferred} comments from previous Next 15 Days tab")
     
     print_progress(f"Tab 1 (Next 15 Days): {len(tab1_df)} CAs")
     print_progress(f"Tab 2 (Last 7 Days): {len(tab2_df)} CAs")
@@ -635,14 +695,14 @@ def load_existing_excel(file_path):
     
     try:
         # Load archive tab
-        archive_df = pd.read_excel(file_path, sheet_name="Archive")
+        archive_df = pd.read_excel(file_path, sheet_name="Archive", engine='openpyxl')
         print_progress(f"Loaded {len(archive_df)} CAs from archive")
     except Exception:
         archive_df = pd.DataFrame()
     
     try:
         # Load Tab 2 to preserve manual removals
-        tab2_df = pd.read_excel(file_path, sheet_name="Last 7 Days")
+        tab2_df = pd.read_excel(file_path, sheet_name="Last 7 Days", engine='openpyxl')
         print_progress(f"Loaded {len(tab2_df)} CAs from Tab 2")
     except Exception:
         tab2_df = pd.DataFrame()
